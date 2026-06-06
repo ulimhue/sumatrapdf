@@ -1,0 +1,84 @@
+name: Build x64
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    name: Build x64
+    runs-on: windows-2025-vs2026
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Generate docs
+        run: bun ./cmd/gen-docs.ts
+
+      - name: Get version info
+        id: version
+        shell: pwsh
+        run: |
+          $sha = git rev-parse HEAD
+          $ver = git log --oneline | Measure-Object | Select-Object -ExpandProperty Count
+          echo "sha=$sha" >> $env:GITHUB_OUTPUT
+          echo "ver=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $ver, SHA: $sha"
+
+      - name: Set build config
+        shell: pwsh
+        run: |
+          $today = Get-Date -Format "yyyy-MM-dd"
+          $sha = "${{ steps.version.outputs.sha }}"
+          $ver = "${{ steps.version.outputs.ver }}"
+          $line1 = "#define GIT_COMMIT_ID `"$sha`""
+          $line2 = "#define BUILT_ON `"$today`""
+          $line3 = "#define PRE_RELEASE_VER `"$ver`""
+          $content = $line1 + "`n" + $line2 + "`n" + $line3 + "`n"
+          Set-Content -Path "src\utils\BuildConfig.h" -Value $content -Encoding UTF8
+          Write-Host "Build config set"
+          Get-Content "src\utils\BuildConfig.h"
+
+      - name: Build x64 Release
+        shell: pwsh
+        run: |
+          $msbuild = "C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+          $sln = "vs2022\SumatraPDF.sln"
+          $config = "/p:Configuration=Release;Platform=x64"
+          $targets = "/t:SumatraPDF;SumatraPDF-dll"
+          & $msbuild $sln $targets $config /m
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: List output files
+        shell: pwsh
+        run: |
+          Write-Host "=== Checking output directory ==="
+          if (Test-Path "out\rel64") {
+            Get-ChildItem "out\rel64" | Select-Object Name, Length | Format-Table
+          } else {
+            Write-Host "Directory out\rel64 not found!"
+            Get-ChildItem "out" -Recurse -Filter "*.exe" | Select-Object FullName
+          }
+          Write-Host "=== Done ==="
+
+      - name: Upload x64 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SumatraPDF-x64-installer
+          path: |
+            out/rel64/SumatraPDF-dll.exe
+            out/rel64/libmupdf.dll
+            out/rel64/PdfFilter.dll
+            out/rel64/PdfPreview.dll
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload x64 portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: SumatraPDF-x64-portable
+          path: out/rel64/SumatraPDF.exe
+          retention-days: 90
+          if-no-files-found: error
